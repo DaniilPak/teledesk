@@ -471,7 +471,7 @@
       '<div class="platforms">' +
       '<button class="platform" data-p="ios"><span class="pi">' + ic('phone') + '</span><span><b>iOS</b><span class="muted small">Swift Package · SwiftUI & UIKit</span></span></button>' +
       '<button class="platform" data-p="web"><span class="pi">' + ic('globe') + '</span><span><b>Website</b><span class="muted small">One script tag · any framework</span></span></button>' +
-      '</div><div class="card card-b" id="guide"></div></div>');
+      '</div><div class="card" id="ai"></div><div class="card card-b" id="guide"></div></div>');
 
     var cfgCode = 'import TeleDesk\n\n// In your App init or application(_:didFinishLaunchingWithOptions:)\nTeleDesk.configure(\n    publicKey: "' + p.publicKey +
       '",\n    apiURL: URL(string: "' + API + '")!\n)\n\n// Optional: who is writing (shown in Telegram)\nTeleDesk.identify(name: user.name, email: user.email, meta: ["plan": "pro"])';
@@ -481,8 +481,88 @@
       button: ['Your own button', 'Open it from anywhere', '// SwiftUI\nTeleDeskButton("Contact support")\n    .buttonStyle(.borderedProminent)\n\n// UIKit\n@objc func helpTapped() {\n    TeleDesk.present(from: self)\n}'],
     };
 
+    function aiPrompt() {
+      if (platform === 'ios') {
+        var entry = {
+          floating: 'Add a floating support chat button over the main UI: in SwiftUI attach `.teleDeskFloatingButton()` to the root view; in UIKit call `TeleDesk.showFloatingButton()` once the key window is visible.',
+          settings: 'Add a "Contact support" row to the app\'s existing Settings/Profile screen using `TeleDeskSupportRow()` (it pushes the chat inside a NavigationStack; use `TeleDeskSupportRow(presentation: .sheet)` if that screen has no NavigationStack). If the app is UIKit, add a row/cell whose tap calls `TeleDesk.present(from: self)`.',
+          button: 'Add a "Contact support" button where it fits best (e.g. help or settings screen) using `TeleDeskButton("Contact support")` in SwiftUI, or `TeleDesk.present(from: self)` from a UIKit button action.',
+        }[iosOpt];
+        return [
+          'Integrate the TeleDesk support chat SDK into this iOS app. Customer messages from the chat are delivered to the developer\'s Telegram as support tickets.',
+          '',
+          '## 1. Add the Swift package',
+          '- Repository: https://github.com/DaniilPak/teledesk',
+          '- Version rule: "Up to Next Major" from 0.1.0. Library product: `TeleDesk`. Minimum iOS 16.',
+          '- If the app is an Xcode project, add the package dependency to the .xcodeproj (Package Dependencies) and link the `TeleDesk` product to the main app target. If it uses a Package.swift / Tuist / XcodeGen, add it there instead.',
+          '',
+          '## 2. Configure once at launch',
+          'Find the app entry point (the `@main` App struct init, or `application(_:didFinishLaunchingWithOptions:)`) and add:',
+          '```swift',
+          'import TeleDesk',
+          '',
+          'TeleDesk.configure(',
+          '    publicKey: "' + p.publicKey + '",',
+          '    apiURL: URL(string: "' + API + '")!',
+          ')',
+          '```',
+          '',
+          '## 3. Identify the signed-in user (if the app has accounts)',
+          'Wherever the current user becomes known (after login / session restore), call:',
+          '```swift',
+          'TeleDesk.identify(name: user.displayName, email: user.email, meta: ["userId": user.id])',
+          '```',
+          'Use the app\'s real user model fields; skip fields that don\'t exist. On logout call `TeleDesk.reset()`.',
+          '',
+          '## 4. Show the chat',
+          entry,
+          '',
+          '## Rules',
+          '- Use only these public APIs: `TeleDesk.configure`, `TeleDesk.identify`, `TeleDesk.reset`, `TeleDeskChatView`, `.teleDeskFloatingButton()`, `TeleDeskSupportRow`, `TeleDeskButton`, `TeleDesk.present(from:)`, `TeleDesk.showFloatingButton()`, `TeleDesk.makeViewController()`.',
+          '- The public key is meant to ship in the app; it is not a secret. Do not add other keys or tokens.',
+          '- Match the existing code style; keep the change minimal.',
+          '- Build the app to confirm it compiles, then tell me where you placed the entry point.',
+        ].join('\n');
+      }
+      return [
+        'Integrate the TeleDesk support chat widget into this website. Visitor messages are delivered to the site owner\'s Telegram as support tickets.',
+        '',
+        '## 1. Load the widget on every page',
+        'Add this tag once so it renders on all pages (root layout / base template / `index.html` / `_document` / `app.html` — whatever this project uses), right before `</body>`:',
+        '```html',
+        '<script src="' + widgetUrl + '" data-key="' + p.publicKey + '" async></script>',
+        '```',
+        'For Next.js use `next/script` with `strategy="afterInteractive"` and the same `src` and `data-key`. For other frameworks, use their equivalent of a global script in the root layout.',
+        '',
+        '## 2. Identify the signed-in user (if the site has accounts)',
+        'Where the current user is available on the client, run:',
+        '```js',
+        'window.TeleDesk = window.TeleDesk || function () { (TeleDesk.q = TeleDesk.q || []).push(arguments) };',
+        "TeleDesk('identify', { name: user.name, email: user.email, meta: { userId: user.id } });",
+        '```',
+        'Use the real user fields; skip ones that don\'t exist. This stub is safe to call before the widget loads.',
+        '',
+        '## 3. Optional: open from existing "Contact" / "Help" links',
+        "If the site has a contact or help link, make it call `TeleDesk('open')` (also available: `'close'`, `'toggle'`).",
+        '',
+        '## Rules',
+        '- The `data-key` is a public key meant for the browser; it is not a secret.',
+        '- If the site sends a Content-Security-Policy, allow `' + new URL(widgetUrl).origin + '` in script-src and `' + (API ? new URL(API).origin : '') + '` in connect-src.',
+        '- Keep the change minimal and match the project\'s conventions. Tell me which files you changed.',
+      ].join('\n');
+    }
+
+    function drawAi() {
+      var text = aiPrompt();
+      $('#ai').innerHTML = '<div class="card-h"><div><h2>Install with an AI agent</h2><p>Paste into Claude Code, Cursor, Codex or any coding agent working in your ' +
+        (platform === 'ios' ? 'Xcode project' : 'website repo') + '. Your public key is already filled in.</p></div>' +
+        '<button type="button" class="btn" data-copy="' + esc(text) + '">' + ic('copy') + 'Copy prompt</button></div>' +
+        '<details class="ai-preview"><summary>Show prompt</summary><pre>' + esc(text) + '</pre></details>';
+    }
+
     function draw() {
       $$('.platform').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-p') === platform); });
+      drawAi();
       if (platform === 'ios') {
         $('#guide').innerHTML = '<div class="steps">' +
           '<div class="st"><h3>Add the Swift package</h3><p>Xcode → File → Add Package Dependencies…</p>' + code('https://github.com/DaniilPak/teledesk') + '</div>' +
