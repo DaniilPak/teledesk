@@ -1,9 +1,24 @@
 // Minimal host app: create an iOS App in Xcode, add the TeleDesk package, and replace the App file with this.
 import SwiftUI
+import UserNotifications
 import TeleDesk
+
+/// Push notifications: needs the Push Notifications capability and an APNs key uploaded in the dashboard.
+final class AppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        UNUserNotificationCenter.current().delegate = TeleDesk.notificationDelegate // or forward from your own delegate
+        return true
+    }
+
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        TeleDesk.setDeviceToken(deviceToken)
+    }
+}
 
 @main
 struct ExampleApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
     init() {
         TeleDesk.configure(
             publicKey: "pk_YOUR_PUBLIC_KEY",
@@ -47,6 +62,8 @@ struct SettingsView: View {
             }
             .navigationTitle("Settings")
         }
+        // Ask once the customer has a reason to want replies.
+        .task { await TeleDesk.requestPushAuthorization() }
     }
 }
 

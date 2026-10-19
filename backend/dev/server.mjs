@@ -2,6 +2,7 @@
 // Run: node backend/dev/server.mjs   →  http://localhost:8787
 // Simulate Telegram: POST /dev/telegram with an Update JSON (no secret needed locally).
 import http from 'node:http';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,11 +19,34 @@ const BOT = process.env.TELEGRAM_BOT_USERNAME || 'YourSupportBot';
 const store = createMemoryStore();
 // Real sends only if DEV_TELEGRAM_LIVE=1; otherwise calls are logged.
 const telegram = createTelegram(process.env.DEV_TELEGRAM_LIVE === '1' ? process.env.TELEGRAM_BOT_TOKEN : undefined);
-const app = createApp({
+
+// In-process stand-ins for API Gateway WebSockets, SQS and APNs.
+const sockets = new Map(); // connectionId -> { socket, pid }
+const realtime = {
+  async add(pid, id) { const c = sockets.get(id); if (c) c.pid = pid; },
+  async remove(id) { sockets.get(id)?.socket.destroy(); sockets.delete(id); },
+  async publish(pid, event) {
+    for (const c of sockets.values()) if (c.pid === pid) wsSend(c.socket, JSON.stringify(event));
+  },
+};
+let app;
+const queue = { enqueue: async (job, delay) => void setTimeout(() => app.runJob(job), delay * 1000) };
+const push = { send: async (cfg, device, payload) => (console.log('[apns dev]', device.env, JSON.stringify(payload.aps.alert)), { ok: true, status: 200 }) };
+
+app = createApp({
   store,
   telegram,
-  config: { jwtSecret: 'dev-jwt-secret', botUsername: BOT, webhookSecret: WEBHOOK_SECRET, dashboardUrl: ORIGIN },
+  realtime,
+  queue,
+  push,
+  config: { jwtSecret: 'dev-jwt-secret', botUsername: BOT, webhookSecret: WEBHOOK_SECRET, dashboardUrl: ORIGIN, wsUrl: `ws://localhost:${PORT}/ws` },
 });
+
+function wsSend(socket, text) {
+  const data = Buffer.from(text);
+  const head = data.length < 126 ? Buffer.from([0x81, data.length]) : Buffer.from([0x81, 126, data.length >> 8, data.length & 255]);
+  socket.write(Buffer.concat([head, data]));
+}
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'application/javascript', '.css': 'text/css' };
 const CORS = {
@@ -43,7 +67,7 @@ const readBody = (req) =>
     req.on('end', () => resolve(data));
   });
 
-http
+const server = http
   .createServer(async (req, res) => {
     const url = new URL(req.url, ORIGIN);
     if (req.method === 'OPTIONS') return res.writeHead(204, CORS).end();
@@ -85,4 +109,20 @@ http
       res.writeHead(404).end('Not found');
     }
   })
-  .listen(PORT, () => console.log(`TeleDesk dev server on ${ORIGIN}  (demo: ${ORIGIN}/demo.html?key=pk_...)`));
+server.on('upgrade', async (req, socket) => {
+  const url = new URL(req.url, ORIGIN);
+  if (url.pathname !== '/ws') return socket.destroy();
+  const id = crypto.randomUUID();
+  sockets.set(id, { socket, pid: null });
+  if (!(await app.wsConnect(id, Object.fromEntries(url.searchParams)))) {
+    sockets.delete(id);
+    return socket.end('HTTP/1.1 401 Unauthorized\r\n\r\n');
+  }
+  const accept = crypto.createHash('sha1').update(req.headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
+  socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+  socket.on('data', (buf) => { if ((buf[0] & 0x0f) === 0x8) realtime.remove(id); }); // close frame; pings are ignored
+  socket.on('close', () => sockets.delete(id));
+  socket.on('error', () => sockets.delete(id));
+});
+
+server.listen(PORT, () => console.log(`TeleDesk dev server on ${ORIGIN}  (demo: ${ORIGIN}/demo.html?key=pk_...)`));

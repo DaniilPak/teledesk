@@ -62,7 +62,7 @@
     for (var i = 0; i < String(s).length; i++) h = (h * 31 + String(s).charCodeAt(i)) % 360;
     return 'hsl(' + h + ' 55% 52%)';
   }
-  function clearTimers() { timers.forEach(clearInterval); timers = []; }
+  function clearTimers() { timers.forEach(clearInterval); timers = []; S.onLive = null; }
   function every(ms, fn) { timers.push(setInterval(fn, ms)); }
   function $(sel) { return root.querySelector(sel); }
   function $$(sel) { return Array.prototype.slice.call(root.querySelectorAll(sel)); }
@@ -73,6 +73,67 @@
     t.classList.add('show');
     clearTimeout(toastTimer);
     toastTimer = setTimeout(function () { t.classList.remove('show'); }, 1800);
+  }
+
+  // ---------- live updates (WebSocket) ----------
+  var LIVE = { pid: null, ws: null, retry: 0, timer: null, ping: null, on: false };
+  function setLiveDot() {
+    var d = document.getElementById('live');
+    if (d) d.className = 'live' + (LIVE.on ? ' on' : '');
+    if (d) d.title = LIVE.on ? 'Live: updates appear instantly' : 'Reconnecting…';
+  }
+  function liveStart(pid) {
+    if (LIVE.pid === pid && LIVE.ws) return setLiveDot();
+    liveStop();
+    LIVE.pid = pid;
+    liveOpen();
+  }
+  function liveStop() {
+    LIVE.pid = null;
+    clearTimeout(LIVE.timer);
+    clearInterval(LIVE.ping);
+    if (LIVE.ws) { LIVE.ws.onclose = null; LIVE.ws.close(); }
+    LIVE.ws = null;
+    LIVE.on = false;
+  }
+  function liveOpen() {
+    var pid = LIVE.pid;
+    api('GET', '/v1/projects/' + pid + '/realtime').then(function (r) {
+      if (!r.url || LIVE.pid !== pid) return;
+      var ws = new WebSocket(r.url + (r.url.indexOf('?') < 0 ? '?' : '&') + 'token=' + encodeURIComponent(r.token));
+      LIVE.ws = ws;
+      ws.onopen = function () {
+        LIVE.on = true;
+        LIVE.retry = 0;
+        setLiveDot();
+        clearInterval(LIVE.ping);
+        LIVE.ping = setInterval(function () { if (ws.readyState === 1) ws.send('{"action":"ping"}'); }, 4 * 60 * 1000);
+      };
+      ws.onmessage = function (m) {
+        var e;
+        try { e = JSON.parse(m.data); } catch (x) { return; }
+        if (e.type === 'message' && e.isNew) toast('New ticket #' + e.ticket);
+        if (e.type === 'project') {
+          api('GET', '/v1/projects/' + pid).then(function (x) { replaceProject(x.project); refreshSidebar(); }).catch(function () {});
+        }
+        if (S.onLive) S.onLive(e);
+      };
+      ws.onclose = function () {
+        LIVE.on = false;
+        LIVE.ws = null;
+        clearInterval(LIVE.ping);
+        setLiveDot();
+        if (LIVE.pid !== pid) return;
+        LIVE.timer = setTimeout(liveOpen, Math.min(30000, 1000 * Math.pow(2, LIVE.retry++)));
+      };
+    }).catch(function () {
+      if (LIVE.pid === pid) LIVE.timer = setTimeout(liveOpen, Math.min(30000, 1000 * Math.pow(2, LIVE.retry++)));
+    });
+  }
+  // Coalesce bursts of events into one refresh.
+  function onLive(fn) {
+    var t;
+    S.onLive = function (e) { clearTimeout(t); t = setTimeout(function () { fn(e); }, 250); };
   }
 
   function api(method, path, body) {
@@ -185,7 +246,8 @@
             return '<a href="#/p/' + esc(pid) + '/' + n[0] + '" class="' + (n[0] === section ? 'active' : '') + '">' + ic(n[2]) + n[1] +
               (n[0] === 'tickets' && open ? '<span class="count">' + open + '</span>' : '') +
               (n[0] === 'telegram' && !p.telegram.connected ? '<span class="count" style="background:var(--warn)">!</span>' : '') + '</a>';
-          }).join('') + '</nav>'
+          }).join('') + '</nav>' +
+          '<div class="live-row"><span id="live" class="live"></span><span class="muted small">Live updates</span></div>'
         : '') +
       '<div class="side-foot">' + avatar(S.me && (S.me.name || S.me.email), '#55555f') +
       '<div class="who"><div style="font-weight:600">' + esc(S.me && S.me.name) + '</div><div class="muted small">' + esc(S.me && S.me.email) + '</div></div>' +
@@ -194,6 +256,8 @@
       '<div class="main"><div class="mobile-bar"><button class="icon-btn" id="burger">' + ic('menu') + '</button><span class="logo">' + ic('chat') + '</span>TeleDesk</div>' +
       '<div class="page" id="page">' + html + '</div></div></div>';
 
+    if (p) liveStart(p.id);
+    setLiveDot();
     $('#sw').onclick = function (e) { e.stopPropagation(); $('#swm').classList.toggle('open'); };
     document.onclick = function () {
       var m = $('#swm');
@@ -202,7 +266,7 @@
       if (sh) sh.classList.remove('nav-open');
     };
     $('.sidebar').addEventListener('click', function (e) { if (!e.target.closest('a')) e.stopPropagation(); });
-    $('#logout').onclick = function () { ls('td_token', null); S.me = null; S.projects = []; location.hash = '#/login'; };
+    $('#logout').onclick = function () { liveStop(); ls('td_token', null); S.me = null; S.projects = []; location.hash = '#/login'; };
     $('#burger').onclick = function (e) { e.stopPropagation(); $('#shell').classList.toggle('nav-open'); };
   }
 
@@ -266,7 +330,8 @@
       }).catch(function () {});
     }
     load();
-    every(10000, load);
+    onLive(load);
+    every(60000, load);
   }
 
   function drawSetup(p, ts) {
@@ -397,7 +462,8 @@
       api('GET', '/v1/projects/' + p.id + '/tickets').then(function (r) { all = r.tickets; updateOpenCount(p.id, all); draw(); }).catch(function () {});
     }
     load();
-    every(8000, load);
+    onLive(load);
+    every(60000, load);
   }
 
   function viewTicket(p, n) {
@@ -409,7 +475,7 @@
         var who = t.name || t.email || 'Anonymous visitor';
         if (!$('#convo')) {
           $('#tk').innerHTML =
-            header('Ticket #' + t.number, '', '<span id="sb"></span><button class="btn secondary" id="st"></button>',
+            header('Ticket #' + t.number, '', '<span id="sb"></span><span id="tgl"></span><button class="btn secondary" id="st"></button>',
               '<a href="#/p/' + esc(p.id) + '/tickets">Tickets</a>' + ic('right') + '<span>#' + t.number + '</span>') +
             '<div class="grid-2"><div class="card" style="overflow:hidden"><div class="convo" id="convo"></div>' +
             '<form class="composer" id="rf"><textarea class="in grow" name="text" rows="1" placeholder="Reply to ' + esc(who) + '…"></textarea>' +
@@ -431,6 +497,9 @@
           };
         }
         $('#sb').innerHTML = statusBadge(t.status);
+        $('#tgl').innerHTML = t.telegramUrl
+          ? '<a class="btn secondary" target="_blank" rel="noopener" href="' + esc(t.telegramUrl) + '">' + TG_SVG.replace('<svg', '<svg style="width:14px;height:14px;fill:#2aabee"') + 'Open topic</a>'
+          : '';
         var st = $('#st');
         st.innerHTML = t.status === 'open' ? ic('check') + 'Mark resolved' : 'Reopen';
         st.onclick = function () {
@@ -454,7 +523,8 @@
       }).catch(function (e) { $('#tk').innerHTML = '<div class="card empty">' + esc(e.message) + '</div>'; });
     }
     load();
-    every(4000, load);
+    onLive(function (e) { if (e.type !== 'message' || String(e.ticket) === String(n)) load(); });
+    every(30000, load);
   }
 
   // ---------- install ----------
@@ -493,7 +563,7 @@
           '',
           '## 1. Add the Swift package',
           '- Repository: https://github.com/DaniilPak/teledesk',
-          '- Version rule: "Up to Next Major" from 0.1.0. Library product: `TeleDesk`. Minimum iOS 16.',
+          '- Version rule: "Up to Next Major" from 0.2.0. Library product: `TeleDesk`. Minimum iOS 16.',
           '- If the app is an Xcode project, add the package dependency to the .xcodeproj (Package Dependencies) and link the `TeleDesk` product to the main app target. If it uses a Package.swift / Tuist / XcodeGen, add it there instead.',
           '',
           '## 2. Configure once at launch',
@@ -517,8 +587,16 @@
           '## 4. Show the chat',
           entry,
           '',
+          '## 5. Push notifications for support replies',
+          'So customers get a notification when support answers, even with the app closed:',
+          '- Add the **Push Notifications** capability to the app target (Signing & Capabilities). If the app has no AppDelegate, add one via `@UIApplicationDelegateAdaptor`.',
+          '- In `application(_:didRegisterForRemoteNotificationsWithDeviceToken:)` call `TeleDesk.setDeviceToken(deviceToken)` (keep any existing push code there).',
+          '- Notification delegate: if the app has no `UNUserNotificationCenter` delegate, set `UNUserNotificationCenter.current().delegate = TeleDesk.notificationDelegate` in `didFinishLaunching`. If it already has one, forward to TeleDesk instead: in `willPresent` use `TeleDesk.presentationOptions(for: notification)` when it returns non-nil, and in `didReceive` call `TeleDesk.handleNotificationResponse(response)` first.',
+          '- Call `await TeleDesk.requestPushAuthorization()` at a natural moment (for example when the support chat is first opened), not on first launch, unless the app already asks for notifications — then just make sure `registerForRemoteNotifications()` runs.',
+          '' + (p.apns.configured ? '- Push is already configured on the server for bundle ID `' + p.apns.bundleId + '` — check that it matches this app.' : '- Remind me to upload an APNs key (.p8) in the TeleDesk dashboard → Settings → iOS push notifications; pushes stay off until then.'),
+          '',
           '## Rules',
-          '- Use only these public APIs: `TeleDesk.configure`, `TeleDesk.identify`, `TeleDesk.reset`, `TeleDeskChatView`, `.teleDeskFloatingButton()`, `TeleDeskSupportRow`, `TeleDeskButton`, `TeleDesk.present(from:)`, `TeleDesk.showFloatingButton()`, `TeleDesk.makeViewController()`.',
+          '- Use only these public APIs: `TeleDesk.configure`, `TeleDesk.identify`, `TeleDesk.reset`, `TeleDeskChatView`, `.teleDeskFloatingButton()`, `TeleDeskSupportRow`, `TeleDeskButton`, `TeleDesk.present(from:)`, `TeleDesk.showFloatingButton()`, `TeleDesk.makeViewController()`, `TeleDesk.setDeviceToken`, `TeleDesk.requestPushAuthorization`, `TeleDesk.notificationDelegate`, `TeleDesk.presentationOptions(for:)`, `TeleDesk.handleNotificationResponse`.',
           '- The public key is meant to ship in the app; it is not a secret. Do not add other keys or tokens.',
           '- Match the existing code style; keep the change minimal.',
           '- Build the app to confirm it compiles, then tell me where you placed the entry point.',
@@ -572,6 +650,9 @@
             return '<button class="opt' + (k === iosOpt ? ' on' : '') + '" data-o="' + k + '"><b>' + opts[k][0] + '</b><span>' + opts[k][1] + '</span></button>';
           }).join('') +
           '</div>' + code(opts[iosOpt][2]) + '</div>' +
+          '<div class="st"><h3>Push notifications <span class="muted" style="font-weight:400">— optional</span></h3><p>Customers get a notification when you answer, even with the app closed. Add the Push Notifications capability, ' +
+          (p.apns.configured ? 'then:' : 'upload your APNs key in <a href="#/p/' + esc(p.id) + '/settings" style="color:var(--accent)">Settings</a>, then:') + '</p>' +
+          code('// AppDelegate (SwiftUI: @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate)\nfunc application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {\n    UNUserNotificationCenter.current().delegate = TeleDesk.notificationDelegate\n    return true\n}\n\nfunc application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {\n    TeleDesk.setDeviceToken(deviceToken)\n}\n\n// When it makes sense, e.g. when the chat opens\nawait TeleDesk.requestPushAuthorization()') + '</div>' +
           '<div class="st"><h3>Send a test message</h3><p>Run the app, open the chat and say hi. It shows up in Telegram and on the <a href="#/p/' + esc(p.id) +
           '/tickets" style="color:var(--accent)">Tickets</a> page.</p></div></div>';
       } else {
@@ -607,14 +688,20 @@
         ? '<button class="btn secondary" id="link">Move to another chat</button><button class="btn danger" id="unlink">Disconnect</button>'
         : '<button class="btn" id="link">' + ic('send') + 'Connect Telegram</button>') +
       '</div></div><div id="linkbox"></div></div></div>' +
+      (c ? layoutCard(p) : '') +
       '<div class="grid-2" style="grid-template-columns:1fr 1fr"><div class="card"><div class="card-h"><h2>How answering works</h2></div><div class="card-b"><ul class="list-plain">' +
-      '<li><span class="tick">1</span><div>A customer writes → the bot posts <b>🆕 Ticket #N</b> with their details.</div></li>' +
-      '<li><span class="tick">2</span><div><b>Reply</b> to that message (swipe left on mobile). The customer sees it in the chat within seconds.</div></li>' +
-      '<li><span class="tick">3</span><div>Tap <b>✅ Close</b> when solved. Their next message opens a new ticket.</div></li></ul></div></div>' +
+      (c && p.telegram.topics
+        ? '<li><span class="tick">1</span><div>A customer writes → a new topic <b>🟢 #N · Name</b> opens with their details.</div></li>' +
+          '<li><span class="tick">2</span><div><b>Write in the topic</b> — no need to reply. Every message there reaches the customer within seconds.</div></li>' +
+          '<li><span class="tick">3</span><div>Tap <b>✅ Close</b> or send <span class="kbd">/close</span> when solved — the topic is ' + (p.telegram.topicOnResolve === 'delete' ? 'deleted' : 'renamed ✅ and closed') + '.</div></li>'
+        : '<li><span class="tick">1</span><div>A customer writes → the bot posts <b>🆕 Ticket #N</b> with their details.</div></li>' +
+          '<li><span class="tick">2</span><div><b>Reply</b> to that message (swipe left on mobile). The customer sees it in the chat within seconds.</div></li>' +
+          '<li><span class="tick">3</span><div>Tap <b>✅ Close</b> when solved. Their next message opens a new ticket.</div></li>') +
+      '</ul></div></div>' +
       '<div class="card"><div class="card-h"><h2>Bot commands</h2></div><div class="card-b"><ul class="list-plain">' +
       '<li><span class="kbd">/tickets</span><span class="muted">List open tickets</span></li>' +
-      '<li><span class="kbd">/close</span><span class="muted">Reply to a ticket with it to resolve</span></li>' +
-      '<li><span class="kbd">/reopen</span><span class="muted">Reply to a ticket with it to reopen</span></li>' +
+      '<li><span class="kbd">/close</span><span class="muted">Resolve — in a ticket topic, or as a reply</span></li>' +
+      '<li><span class="kbd">/reopen</span><span class="muted">Reopen — in a ticket topic, or as a reply</span></li>' +
       '<li><span class="kbd">/help</span><span class="muted">Show help</span></li></ul></div></div></div></div>');
 
     $('#link').onclick = function () {
@@ -645,6 +732,51 @@
         api('DELETE', '/v1/projects/' + p.id + '/telegram').then(function (r) { replaceProject(r.project); viewTelegram(r.project); });
       };
     }
+    if ($('#recheck')) {
+      $('#recheck').onclick = function () {
+        $('#recheck').disabled = true;
+        api('POST', '/v1/projects/' + p.id + '/telegram/check').then(function (r) {
+          replaceProject(r.project);
+          toast(r.project.telegram.topics ? 'Topics are on' : 'Topics still unavailable');
+          viewTelegram(r.project);
+        }).catch(function (e) { toast(e.message); $('#recheck').disabled = false; });
+      };
+    }
+    $$('[name="resolve"]').forEach(function (r) {
+      r.onchange = function () {
+        api('PATCH', '/v1/projects/' + p.id, { topicOnResolve: r.value }).then(function (x) { replaceProject(x.project); toast('Saved'); viewTelegram(x.project); });
+      };
+    });
+    onLive(function (e) {
+      if (e.type !== 'project' || $('#linkbox').innerHTML) return;
+      api('GET', '/v1/projects/' + p.id).then(function (x) { replaceProject(x.project); viewTelegram(x.project); });
+    });
+  }
+
+  function layoutCard(p) {
+    var t = p.telegram;
+    if (t.chatType === 'private') {
+      return '<div class="card"><div class="card-h"><div><h2>Ticket layout</h2><p>Private chat — tickets arrive as messages, reply to answer.</p></div><span class="badge off">Messages</span></div>' +
+        '<div class="card-b muted">Handling many customers or working as a team? Connect a <b>group with Topics</b> instead — every ticket gets its own topic, and resolved ones are closed out of the way. Use <b>Move to another chat → Team group</b>.</div></div>';
+    }
+    if (t.topics) {
+      return '<div class="card"><div class="card-h"><div><h2>Ticket layout</h2><p>One topic per ticket. Open tickets show 🟢, resolved ones ✅.</p></div><span class="badge ok">Topics on</span></div>' +
+        '<div class="card-b"><label class="l">When a ticket is resolved</label><div class="seg">' +
+        '<label class="segopt"><input type="radio" name="resolve" value="close"' + (t.topicOnResolve !== 'delete' ? ' checked' : '') + '><span>Close topic (keep history)</span></label>' +
+        '<label class="segopt"><input type="radio" name="resolve" value="delete"' + (t.topicOnResolve === 'delete' ? ' checked' : '') + '><span>Delete topic</span></label>' +
+        '</div><div class="hint">History is always kept on the Tickets page, whichever you choose.</div></div></div>';
+    }
+    var why = t.topicsReason === 'not_forum'
+      ? 'Topics are turned off in this group.'
+      : t.topicsReason === 'no_rights'
+        ? 'Topics are on, but the bot isn’t an admin with the “Manage topics” right.'
+        : 'The bot couldn’t confirm it can manage topics here.';
+    return '<div class="card"><div class="card-h"><div><h2>Ticket layout</h2><p>' + why + ' Tickets are posted as messages for now.</p></div><span class="badge open">Messages</span></div>' +
+      '<div class="card-b"><ol class="howto">' +
+      '<li>In Telegram, open <b>' + esc(t.chatTitle) + '</b> → group info → <b>Edit</b> → turn on <b>Topics</b>.</li>' +
+      '<li><b>Administrators</b> → add <b>@' + esc(CFG.botUsername || 'the bot') + '</b> → enable <b>Manage topics</b> → Save.</li>' +
+      '<li>Come back here — it switches automatically, or press the button.</li></ol>' +
+      '<button class="btn secondary" id="recheck">Check again</button></div></div>';
   }
 
   // ---------- settings ----------
@@ -658,6 +790,7 @@
       '<div class="field"><label class="l">Brand color</label><div class="color-in"><input type="color" name="color" value="' + esc(p.color) + '" /><span class="mono" id="hex">' + esc(p.color) + '</span></div></div>' +
       '<button class="btn">Save changes</button></div></form>' +
       '<div class="card"><div class="card-h"><h2>Preview</h2></div><div class="card-b"><div class="preview" id="pv"></div></div></div></div>' +
+      apnsCard(p) +
       '<form class="card" id="df"><div class="card-h"><div><h2 style="color:#d33">Delete project</h2><p>The public key stops working immediately. This can’t be undone.</p></div></div>' +
       '<div class="card-b row"><input class="in grow" name="confirm" autocomplete="off" placeholder="Type “' + esc(p.name) + '” to confirm" /><button class="btn danger">Delete project</button></div></form></div>');
 
@@ -677,6 +810,29 @@
         .then(function (r) { replaceProject(r.project); toast('Saved'); viewSettings(r.project); })
         .catch(function (err) { toast(err.message); });
     };
+    if ($('#af')) {
+      $('#af input[type=file]').onchange = function (e) {
+        var f = e.target.files[0];
+        if (!f) return;
+        var m = f.name.match(/AuthKey_([A-Z0-9]{10})\.p8$/);
+        if (m && !$('#af [name=keyId]').value) $('#af [name=keyId]').value = m[1];
+        f.text().then(function (txt) { $('#af [name=keyP8]').value = txt; });
+      };
+      $('#af').onsubmit = function (e) {
+        e.preventDefault();
+        var fd = Object.fromEntries(new FormData(e.target));
+        delete fd.file;
+        api('PUT', '/v1/projects/' + p.id + '/apns', fd)
+          .then(function (r) { replaceProject(r.project); toast('Push notifications enabled'); viewSettings(r.project); })
+          .catch(function (err) { $('#aerr').textContent = err.message; });
+      };
+    }
+    if ($('#arm')) {
+      $('#arm').onclick = function () {
+        if (!confirm('Turn off push notifications for this project?')) return;
+        api('DELETE', '/v1/projects/' + p.id + '/apns').then(function (r) { replaceProject(r.project); viewSettings(r.project); });
+      };
+    }
     $('#df').onsubmit = function (e) {
       e.preventDefault();
       if ($('#df input').value !== p.name) return toast('Name doesn’t match');
@@ -686,6 +842,36 @@
         location.hash = '#/';
       });
     };
+  }
+
+  function apnsCard(p) {
+    var a = p.apns;
+    if (a.configured) {
+      return '<div class="card"><div class="card-h"><div><h2>iOS push notifications</h2><p>Customers get a notification when you answer, even with the app closed.</p></div><span class="badge ok">On</span></div>' +
+        '<div class="card-b row"><dl class="kv grow"><dt>Bundle ID</dt><dd class="mono">' + esc(a.bundleId) + '</dd><dt>Key ID</dt><dd class="mono">' + esc(a.keyId) + '</dd><dt>Team ID</dt><dd class="mono">' + esc(a.teamId) + '</dd></dl>' +
+        '<button class="btn danger" id="arm">Turn off</button></div></div>';
+    }
+    return '<form class="card" id="af"><div class="card-h"><div><h2>iOS push notifications</h2><p>Notify customers when you answer, even with the app closed. Needs an APNs key from your Apple Developer account.</p></div><span class="badge off">Off</span></div>' +
+      '<div class="card-b"><ol class="howto"><li>Apple Developer → <b>Certificates, IDs & Profiles → Keys</b> → <b>+</b> → enable <b>Apple Push Notifications service (APNs)</b> → download the <span class="mono">.p8</span> file.</li>' +
+      '<li>Upload it below with your Team ID (top-right of the developer portal) and your app’s bundle ID.</li>' +
+      '<li>Add the push code from <a href="#/p/' + esc(p.id) + '/install" style="color:var(--accent)">Install SDK</a>.</li></ol>' +
+      '<div class="grid-2" style="grid-template-columns:1fr 1fr">' +
+      '<div class="field"><label class="l">APNs key (.p8)</label><input class="in" type="file" name="file" accept=".p8" /><input type="hidden" name="keyP8" /></div>' +
+      '<div class="field"><label class="l">Key ID</label><input class="in mono" name="keyId" placeholder="ABC123DEFG" maxlength="10" required /></div>' +
+      '<div class="field"><label class="l">Team ID</label><input class="in mono" name="teamId" placeholder="A1B2C3D4E5" maxlength="10" required /></div>' +
+      '<div class="field"><label class="l">Bundle ID</label><input class="in mono" name="bundleId" placeholder="com.company.app" required /></div></div>' +
+      '<div class="error" id="aerr"></div><button class="btn">Enable push notifications</button>' +
+      '<div class="hint">The key is stored encrypted at rest and never shown again. Revoking it in Apple’s portal stops pushes immediately.</div></div></form>';
+  }
+
+  // Keep the Telegram warning dot in the sidebar in sync without re-rendering the page.
+  function refreshSidebar() {
+    var p = project(LIVE.pid);
+    var link = $('.nav a[href$="/telegram"]');
+    if (!p || !link) return;
+    var c = link.querySelector('.count');
+    if (p.telegram.connected && c) c.remove();
+    if (!p.telegram.connected && !c) link.insertAdjacentHTML('beforeend', '<span class="count" style="background:var(--warn)">!</span>');
   }
 
   function replaceProject(np) {
@@ -717,6 +903,17 @@
       }
       ls('td_project', p.id);
       var section = h[2] || 'overview';
+      // Render from cache right away, then from fresh data (settings may have changed elsewhere).
+      if (section === 'telegram' || section === 'settings' || section === 'install') {
+        var current = location.hash;
+        api('GET', '/v1/projects/' + p.id).then(function (x) {
+          replaceProject(x.project);
+          if (location.hash !== current || JSON.stringify(x.project) === JSON.stringify(p)) return;
+          if (section === 'telegram') viewTelegram(x.project);
+          else if (section === 'settings') viewSettings(x.project);
+          else viewInstall(x.project);
+        }).catch(function () {});
+      }
       if (section === 'tickets' && h[3]) return viewTicket(p, h[3]);
       if (section === 'tickets') return viewTickets(p);
       if (section === 'install') return viewInstall(p);

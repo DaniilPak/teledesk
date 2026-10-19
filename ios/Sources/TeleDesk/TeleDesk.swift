@@ -38,11 +38,12 @@ public enum TeleDesk {
 
     /// Call once at app launch.
     public static func configure(publicKey: String, apiURL: URL, tintColor: Color? = nil) {
-        configuration = Configuration(publicKey: publicKey, apiURL: apiURL, tintColor: tintColor)
+        configure(Configuration(publicKey: publicKey, apiURL: apiURL, tintColor: tintColor))
     }
 
     public static func configure(_ configuration: Configuration) {
         self.configuration = configuration
+        PushRegistration.syncStoredToken()
     }
 
     /// Attach customer details to tickets (shown to you in Telegram).
@@ -54,9 +55,11 @@ public enum TeleDesk {
 
     /// Forget the current visitor (e.g. on logout). The next message starts a fresh conversation.
     public static func reset() {
+        let previous = makeClient()
         identity = Identity()
         VisitorStore.reset()
         SupportState.shared.reset()
+        PushRegistration.visitorChanged(previous: previous)
     }
 
     static func makeClient() -> APIClient? {

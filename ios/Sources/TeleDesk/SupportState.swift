@@ -52,6 +52,8 @@ final class SupportState: ObservableObject {
         unreadCount = 0
     }
 
+    func bumpUnread() { unreadCount += 1 }
+
     func reset() {
         lastRead = nil
         unreadCount = 0

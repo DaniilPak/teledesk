@@ -50,7 +50,7 @@ Default region is `ap-southeast-2`. Everything is pay-per-request; idle cost is 
    ```
    Optional attributes: `data-position="left"`.
 
-   **iOS** — Xcode → *Add Package Dependencies* → `https://github.com/DaniilPak/teledesk` (version 0.1.0 or later).
+   **iOS** — Xcode → *Add Package Dependencies* → `https://github.com/DaniilPak/teledesk` (version 0.2.0 or later).
    ```swift
    import TeleDesk
 
@@ -72,11 +72,36 @@ Default region is `ap-southeast-2`. Everything is pay-per-request; idle cost is 
 
 ## Answering in Telegram
 
-- New conversation → `🆕 Ticket #12` message with customer info (name, email, platform, app version, page).
-- **Reply** to it (or to any follow-up) to answer. A 👍 reaction confirms delivery.
-- **✅ Close** button resolves the ticket; the customer's next message opens a new one. **🔄 Reopen** undoes it.
-- `/tickets` lists open tickets · `/close` as a reply closes that ticket · `/help`.
-- You can also answer and close tickets from the dashboard's *Tickets* tab.
+**Group with Topics (recommended for teams / volume).** Turn on *Topics* in the group and make the bot an admin with *Manage topics* (the dashboard's "Team group" link asks for that right). Then:
+- Every ticket opens its own topic, `🟢 #12 · Jane`, with the customer's details.
+- **Write in the topic** to answer — no reply needed. 👍 confirms delivery.
+- **✅ Close** / `/close` renames it `✅ #12 · Jane` and closes it (or deletes it — Telegram page setting). History stays in the dashboard.
+
+**Private chat or group without Topics.** Tickets arrive as messages; **reply** to one to answer. The bot detects when you enable Topics or promote it and switches automatically.
+
+Commands: `/tickets` lists open tickets · `/close`, `/reopen` · `/help`. You can also answer from the dashboard; replies are mirrored to Telegram.
+
+**Bursts.** Telegram lets a bot post ~20 messages/minute per group. When it's throttled, deliveries wait in an SQS queue and go out in order as soon as Telegram allows — nothing is dropped, and customers' messages are visible in the dashboard immediately.
+
+## Push notifications (iOS)
+
+1. Apple Developer → Keys → create an APNs key, download the `.p8`.
+2. Dashboard → Settings → *iOS push notifications*: upload it with Key ID, Team ID and bundle ID.
+3. In the app: Push Notifications capability, then
+   ```swift
+   // AppDelegate
+   UNUserNotificationCenter.current().delegate = TeleDesk.notificationDelegate   // or forward from yours
+   func application(_ app: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken token: Data) {
+       TeleDesk.setDeviceToken(token)
+   }
+   await TeleDesk.requestPushAuthorization()   // when it makes sense
+   ```
+   Replies from support then notify the customer; tapping opens the chat. While the chat is on screen, no banner is shown.
+   With your own delegate, use `TeleDesk.presentationOptions(for:)` and `TeleDesk.handleNotificationResponse(_:)`.
+
+## Live dashboard
+
+The dashboard keeps a WebSocket open (API Gateway WebSockets) and refreshes instantly on new tickets, messages and status changes; the green dot in the sidebar shows it's connected.
 
 ## Local development
 
@@ -97,7 +122,7 @@ Telegram: `POST /v1/telegram/webhook` (verified with `X-Telegram-Bot-Api-Secret-
 
 ## Notes and limits
 
-- Customer chats poll every 3 s while open (15 s in the background). Swap in API Gateway WebSockets if you need push.
+- Customer chats poll every 3 s while open; iOS customers also get push notifications for replies.
 - Visitors are identified by a random 144-bit id stored on the device/browser; anyone holding that id can read that conversation. Add HMAC identity verification before handling sensitive data.
 - Text messages only (no attachments yet).
 - Bot token and JWT secret are Lambda environment variables; move them to SSM/Secrets Manager for stricter setups.

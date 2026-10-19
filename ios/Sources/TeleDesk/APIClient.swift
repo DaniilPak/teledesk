@@ -71,6 +71,33 @@ struct APIClient: Sendable {
         return r.message
     }
 
+    private struct DeviceBody: Encodable {
+        var key: String
+        var visitorId: String
+        var token: String
+        var env: String
+    }
+    private struct DeviceResponse: Decodable { var pushEnabled: Bool }
+
+    @discardableResult
+    func registerDevice(token: String, environment: String) async throws -> Bool {
+        var req = URLRequest(url: baseURL.appendingPathComponent("v1/client/device"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONEncoder().encode(DeviceBody(key: publicKey, visitorId: visitorId, token: token, env: environment))
+        let r: DeviceResponse = try await perform(req)
+        return r.pushEnabled
+    }
+
+    func unregisterDevice() async throws {
+        var comps = URLComponents(url: baseURL.appendingPathComponent("v1/client/device"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "key", value: publicKey), URLQueryItem(name: "visitorId", value: visitorId)]
+        var req = URLRequest(url: comps.url!)
+        req.httpMethod = "DELETE"
+        let (_, response) = try await session.data(for: req)
+        guard ((response as? HTTPURLResponse)?.statusCode ?? 0) < 300 else { throw APIError(message: "Unregister failed") }
+    }
+
     private func get<T: Decodable>(_ path: String, query: [String: String]) async throws -> T {
         var comps = URLComponents(url: baseURL.appendingPathComponent(String(path.dropFirst())), resolvingAgainstBaseURL: false)!
         comps.queryItems = [URLQueryItem(name: "key", value: publicKey), URLQueryItem(name: "visitorId", value: visitorId)]

@@ -24,8 +24,9 @@ locals {
     png  = "image/png"
     ico  = "image/x-icon"
   }
-  dashboard_url = "https://${aws_cloudfront_distribution.web.domain_name}"
-  api_url       = trimsuffix(aws_apigatewayv2_stage.default.invoke_url, "/")
+  dashboard_url   = "https://${aws_cloudfront_distribution.web.domain_name}"
+  api_url         = trimsuffix(aws_apigatewayv2_stage.default.invoke_url, "/")
+  webhook_updates = jsonencode(["message", "callback_query", "my_chat_member"])
 }
 
 # ---------------- secrets ----------------
@@ -121,6 +122,16 @@ resource "aws_iam_role_policy" "api" {
         Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
         Resource = "${aws_cloudwatch_log_group.api.arn}:*"
       },
+      {
+        Effect   = "Allow"
+        Action   = ["sqs:SendMessage", "sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
+        Resource = aws_sqs_queue.jobs.arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = "execute-api:ManageConnections"
+        Resource = "${aws_apigatewayv2_api.ws.execution_arn}/*"
+      },
     ]
   })
 }
@@ -149,6 +160,9 @@ resource "aws_lambda_function" "api" {
       TELEGRAM_BOT_USERNAME   = var.telegram_bot_username
       TELEGRAM_WEBHOOK_SECRET = random_password.webhook.result
       DASHBOARD_URL           = local.dashboard_url
+      QUEUE_URL               = aws_sqs_queue.jobs.url
+      WS_URL                  = aws_apigatewayv2_stage.ws.invoke_url
+      WS_MANAGEMENT_ENDPOINT  = "https://${aws_apigatewayv2_api.ws.id}.execute-api.${var.region}.amazonaws.com/${aws_apigatewayv2_stage.ws.name}"
     }
   }
 
@@ -201,17 +215,85 @@ resource "aws_lambda_permission" "apigw" {
   source_arn    = "${aws_apigatewayv2_api.api.execution_arn}/*/*"
 }
 
+# ---------------- WebSocket API (dashboard live updates) ----------------
+
+resource "aws_apigatewayv2_api" "ws" {
+  name                       = "${var.name}-ws"
+  protocol_type              = "WEBSOCKET"
+  route_selection_expression = "$request.body.action"
+}
+
+resource "aws_apigatewayv2_integration" "ws" {
+  api_id             = aws_apigatewayv2_api.ws.id
+  integration_type   = "AWS_PROXY"
+  integration_uri    = aws_lambda_function.api.invoke_arn
+  integration_method = "POST"
+}
+
+resource "aws_apigatewayv2_route" "ws" {
+  for_each  = toset(["$connect", "$disconnect", "$default"])
+  api_id    = aws_apigatewayv2_api.ws.id
+  route_key = each.value
+  target    = "integrations/${aws_apigatewayv2_integration.ws.id}"
+}
+
+resource "aws_apigatewayv2_stage" "ws" {
+  api_id      = aws_apigatewayv2_api.ws.id
+  name        = "live"
+  auto_deploy = true
+
+  default_route_settings {
+    throttling_burst_limit = var.api_burst_limit
+    throttling_rate_limit  = var.api_rate_limit
+  }
+}
+
+resource "aws_lambda_permission" "ws" {
+  statement_id  = "AllowWebSocketApi"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.api.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.ws.execution_arn}/*/*"
+}
+
+# ---------------- Job queue (Telegram rate-limit retries) ----------------
+
+resource "aws_sqs_queue" "jobs_dlq" {
+  name                      = "${var.name}-jobs-dlq"
+  message_retention_seconds = 1209600
+}
+
+resource "aws_sqs_queue" "jobs" {
+  name                       = "${var.name}-jobs"
+  visibility_timeout_seconds = 90
+  message_retention_seconds  = 86400
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.jobs_dlq.arn
+    maxReceiveCount     = 5
+  })
+}
+
+resource "aws_lambda_event_source_mapping" "jobs" {
+  event_source_arn        = aws_sqs_queue.jobs.arn
+  function_name           = aws_lambda_function.api.arn
+  batch_size              = 5
+  function_response_types = ["ReportBatchItemFailures"]
+  scaling_config {
+    maximum_concurrency = 2
+  }
+}
+
 # ---------------- Telegram webhook registration ----------------
 
 resource "terraform_data" "telegram_webhook" {
   count            = var.register_telegram_webhook ? 1 : 0
-  triggers_replace = [local.api_url, random_password.webhook.result, sha256(var.telegram_bot_token)]
+  triggers_replace = [local.api_url, random_password.webhook.result, sha256(var.telegram_bot_token), local.webhook_updates]
 
   provisioner "local-exec" {
     command = <<-EOT
       curl -sf "https://api.telegram.org/bot$${TG_TOKEN}/setWebhook" \
         -H 'content-type: application/json' \
-        -d "{\"url\":\"$${WEBHOOK_URL}\",\"secret_token\":\"$${WEBHOOK_SECRET}\",\"allowed_updates\":[\"message\",\"callback_query\"],\"drop_pending_updates\":true}" >/dev/null
+        -d "{\"url\":\"$${WEBHOOK_URL}\",\"secret_token\":\"$${WEBHOOK_SECRET}\",\"allowed_updates\":$${UPDATES},\"drop_pending_updates\":true}" >/dev/null
       curl -sf "https://api.telegram.org/bot$${TG_TOKEN}/setMyCommands" \
         -H 'content-type: application/json' \
         -d '{"commands":[{"command":"tickets","description":"List open tickets"},{"command":"help","description":"How to answer customers"}]}' >/dev/null
@@ -220,6 +302,7 @@ resource "terraform_data" "telegram_webhook" {
       TG_TOKEN       = var.telegram_bot_token
       WEBHOOK_URL    = "${local.api_url}/v1/telegram/webhook"
       WEBHOOK_SECRET = random_password.webhook.result
+      UPDATES        = local.webhook_updates
     }
   }
 }

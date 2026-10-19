@@ -26,3 +26,17 @@ final class TeleDeskTests: XCTestCase {
         XCTAssertTrue(a.hasPrefix("v_") && a.count == 38)
     }
 }
+
+@MainActor
+final class NotificationTests: XCTestCase {
+    func testRecognisesTeleDeskPayload() {
+        XCTAssertTrue(TeleDesk.isTeleDeskNotification(["teledesk": ["ticket": 3]]))
+        XCTAssertFalse(TeleDesk.isTeleDeskNotification(["aps": [:]]))
+    }
+
+    func testDeviceTokenIsStoredAsHex() {
+        TeleDesk.setDeviceToken(Data([0xde, 0xad, 0xbe, 0xef]), environment: .sandbox)
+        XCTAssertEqual(UserDefaults.standard.string(forKey: "teledesk.apnsToken"), "deadbeef")
+        XCTAssertEqual(UserDefaults.standard.string(forKey: "teledesk.apnsEnv"), "sandbox")
+    }
+}
