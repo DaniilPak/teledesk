@@ -1,0 +1,12 @@
+.env.local
+*.tfvars
+!*.tfvars.example
+.terraform/
+*.tfstate*
+infra/build/
+.build/
+.swiftpm/
+node_modules/
+.DS_Store
+infra/tfplan
+.claude/

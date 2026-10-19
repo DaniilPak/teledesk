@@ -1,0 +1,10 @@
+{
+  "name": "teledesk",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node backend/dev/server.mjs",
+    "test": "node backend/dev/test.mjs",
+    "deploy": "cd infra && terraform init && terraform apply"
+  }
+}
