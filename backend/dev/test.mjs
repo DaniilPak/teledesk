@@ -250,4 +250,39 @@ const vid = (c) => 'v_' + c.repeat(36);
   console.log('✅ rate limits, topic detection, migration');
 }
 
+// ---------------------------------------------------------------- topics turned on later, bot lacks the right
+{
+  const t = setup();
+  const chat = { id: -1007777, type: 'supergroup', title: 'Later' };
+  const { auth, pid, publicKey } = await ownerWithProject(t, chat);
+  t.tgState.forums.add(chat.id); // owner enables Topics after connecting; bot is admin without Manage topics
+  const store = null;
+  // force the recheck window to have passed
+  await t.call('PATCH', `/v1/projects/${pid}`, { name: 'My App' }, auth);
+  const meta = await (async () => { const r = await t.call('GET', `/v1/projects/${pid}`, null, auth); return r.body.project; })();
+  assert.equal(meta.telegram.topicsReason, 'not_forum');
+  const realNow = Date.now;
+  Date.now = () => realNow() + 2 * 60 * 1000;
+  try {
+    await t.call('POST', '/v1/client/messages', { key: publicKey, visitorId: vid('g'), text: 'one' });
+    let r = await t.call('GET', `/v1/projects/${pid}`, null, auth);
+    assert.equal(r.body.project.telegram.topicsReason, 'no_rights');
+    const hints = t.sent().filter((c) => /can’t create topics yet/.test(c.params.text));
+    assert.equal(hints.length, 1);
+    Date.now = () => realNow() + 4 * 60 * 1000;
+    await t.call('POST', '/v1/client/messages', { key: publicKey, visitorId: vid('h'), text: 'two' });
+    assert.equal(t.sent().filter((c) => /can’t create topics yet/.test(c.params.text)).length, 1, 'hint only once a day');
+    // owner grants the right -> switches immediately
+    t.tgState.admins.add(chat.id);
+    await t.tg({ my_chat_member: { chat, new_chat_member: { status: 'administrator', can_manage_topics: true } } });
+    r = await t.call('GET', `/v1/projects/${pid}`, null, auth);
+    assert.equal(r.body.project.telegram.topics, true);
+    await t.call('POST', '/v1/client/messages', { key: publicKey, visitorId: vid('i'), text: 'three' });
+    assert.ok(t.calls.some((c) => c.method === 'createForumTopic'));
+  } finally {
+    Date.now = realNow;
+  }
+  console.log('✅ late topic enablement + hint');
+}
+
 console.log('✅ all backend flow tests passed');

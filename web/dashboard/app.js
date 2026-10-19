@@ -747,6 +747,14 @@
         api('PATCH', '/v1/projects/' + p.id, { topicOnResolve: r.value }).then(function (x) { replaceProject(x.project); toast('Saved'); viewTelegram(x.project); });
       };
     });
+    // Telegram sends no update when a group turns Topics on, so re-check when this page opens.
+    if (c && !p.telegram.topics && p.telegram.chatType !== 'private' && Date.now() - (S.autoCheck || 0) > 30000) {
+      S.autoCheck = Date.now();
+      api('POST', '/v1/projects/' + p.id + '/telegram/check').then(function (r) {
+        replaceProject(r.project);
+        if (JSON.stringify(r.project.telegram) !== JSON.stringify(p.telegram) && /\/telegram$/.test(location.hash)) viewTelegram(r.project);
+      }).catch(function () {});
+    }
     onLive(function (e) {
       if (e.type !== 'project' || $('#linkbox').innerHTML) return;
       api('GET', '/v1/projects/' + p.id).then(function (x) { replaceProject(x.project); viewTelegram(x.project); });

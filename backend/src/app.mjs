@@ -33,7 +33,8 @@ const TICKET_SK = (n) => `TICKET#${String(n).padStart(8, '0')}`;
 const LINK_TTL_S = 15 * 60;
 const TGMAP_TTL_S = 180 * 24 * 3600;
 const CURSOR_LOOKBACK_MS = 5000;
-const TOPIC_RECHECK_MS = 10 * 60 * 1000;
+const TOPIC_RECHECK_MS = 60 * 1000; // Telegram sends no update when a group turns Topics on
+const TOPIC_HINT_MS = 24 * 3600 * 1000;
 const MAX_JOB_ATTEMPTS = 25;
 const TOPIC_COLOR = 0x6fb9f0;
 const MEDIA_KEYS = ['photo', 'document', 'sticker', 'voice', 'video', 'animation', 'audio', 'video_note', 'location', 'contact'];
@@ -248,7 +249,10 @@ export function createApp({ store, telegram, config, realtime = noop, push = nul
         project.telegramChatType !== 'private' &&
         now() - (project.telegramTopicsCheckedAt || 0) > TOPIC_RECHECK_MS
       ) {
+        const before = project.telegramTopicsReason;
         project = await refreshTopics(project);
+        if (project.telegramTopics || project.telegramTopicsReason !== before) emit(project.pid, { type: 'project' });
+        await maybeHintTopics(project);
       }
       if (project.telegramTopics) {
         try {
@@ -273,6 +277,18 @@ export function createApp({ store, telegram, config, realtime = noop, push = nul
       if (e.retryAfter) return defer(project, job, e.retryAfter);
       console.error('notifyOwner failed', e);
     }
+  }
+
+  // Tell the group what's missing for topic mode (at most once a day).
+  async function maybeHintTopics(project) {
+    if (project.telegramTopics || !['no_rights', 'not_forum'].includes(project.telegramTopicsReason)) return;
+    if (now() - (project.telegramTopicsHintAt || 0) < TOPIC_HINT_MS) return;
+    await store.update(P(project.pid), 'META', { set: { telegramTopicsHintAt: now() } });
+    const text =
+      project.telegramTopicsReason === 'no_rights'
+        ? '💡 Topics are on, but I can’t create topics yet. Group settings → <b>Administrators</b> → me → turn on <b>Manage topics</b>. I’ll switch to one topic per ticket right away.'
+        : `💡 ${topicHelp}`;
+    await send(project.telegramChatId, text);
   }
 
   async function deliverToTopic(project, ticket, job, recreated = false) {
