@@ -21,12 +21,22 @@ public enum TeleDesk {
         public var tintColor: Color?
         /// Seconds between polls while the chat is visible.
         public var pollInterval: TimeInterval
+        /// Ask for notification permission when the customer opens the chat (iOS only shows the
+        /// prompt once). Off by default; you can call `requestPushAuthorization()` yourself instead.
+        public var requestsPushOnChatOpen: Bool
 
-        public init(publicKey: String, apiURL: URL, tintColor: Color? = nil, pollInterval: TimeInterval = 3) {
+        public init(
+            publicKey: String,
+            apiURL: URL,
+            tintColor: Color? = nil,
+            pollInterval: TimeInterval = 3,
+            requestsPushOnChatOpen: Bool = false
+        ) {
             self.publicKey = publicKey
             self.apiURL = apiURL
             self.tintColor = tintColor
             self.pollInterval = pollInterval
+            self.requestsPushOnChatOpen = requestsPushOnChatOpen
         }
     }
 

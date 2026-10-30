@@ -16,6 +16,15 @@ public extension TeleDesk {
         return granted
     }
 
+    /// Prompts while the customer hasn't decided yet; once allowed, re-registers so the token stays current.
+    internal static func requestPushIfUndecided() async {
+        switch await UNUserNotificationCenter.current().notificationSettings().authorizationStatus {
+        case .notDetermined: await requestPushAuthorization()
+        case .authorized, .provisional, .ephemeral: UIApplication.shared.registerForRemoteNotifications()
+        default: break
+        }
+    }
+
     /// Forward the token from `application(_:didRegisterForRemoteNotificationsWithDeviceToken:)`.
     static func setDeviceToken(_ deviceToken: Data, environment: PushEnvironment = .automatic) {
         PushRegistration.store(token: deviceToken.map { String(format: "%02x", $0) }.joined(), environment: environment)

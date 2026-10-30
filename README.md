@@ -96,6 +96,7 @@ Commands: `/tickets` lists open tickets · `/close`, `/reopen` · `/help`. You c
    }
    await TeleDesk.requestPushAuthorization()   // when it makes sense
    ```
+   Or let the SDK ask when the customer opens the chat: `TeleDesk.configure(.init(publicKey: …, apiURL: …, requestsPushOnChatOpen: true))`.
    Replies from support then notify the customer; tapping opens the chat. While the chat is on screen, no banner is shown.
    With your own delegate, use `TeleDesk.presentationOptions(for:)` and `TeleDesk.handleNotificationResponse(_:)`.
 

@@ -31,6 +31,9 @@ final class ChatViewModel: ObservableObject {
 
     func start() {
         SupportState.shared.chatVisible = true
+        if TeleDesk.configuration?.requestsPushOnChatOpen == true {
+            Task { await TeleDesk.requestPushIfUndecided() }
+        }
         guard let client, pollTask == nil else { return }
         pollTask = Task { [weak self] in
             if let cfg = try? await client.config() {
